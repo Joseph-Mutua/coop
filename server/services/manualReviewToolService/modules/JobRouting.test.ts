@@ -2,6 +2,7 @@ import { ScalarTypes } from '@roostorg/coop-types';
 import { uid } from 'uid';
 
 import createContentItemTypes from '../../../test/fixtureHelpers/createContentItemTypes.js';
+import createMrtQueue from '../../../test/fixtureHelpers/createMrtQueue.js';
 import createOrg from '../../../test/fixtureHelpers/createOrg.js';
 import createUser from '../../../test/fixtureHelpers/createUser.js';
 import { makeTransactionalTestWithFixture } from '../../../test/harness/transactionalTest.js';
@@ -217,6 +218,91 @@ describe('JobRouting tests', () => {
         policyQueue,
         noPolicyQueue,
       };
+    },
+  );
+
+  jobRoutingTestWithFixtures(
+    "reorderRoutingRules does not change another organization's routing rules",
+    async ({ manualReviewToolService, org, deps }) => {
+      const { org: otherOrg } = await createOrg(
+        {
+          KyselyPg: deps.KyselyPg,
+          ModerationConfigService: deps.ModerationConfigService,
+          ApiKeyService: deps.ApiKeyService,
+        },
+        uid(),
+      );
+      const { user: otherUser } = await createUser(deps.KyselyPg, otherOrg.id);
+      const { itemTypes: otherItemTypes } = await createContentItemTypes({
+        moderationConfigService: deps.ModerationConfigService,
+        orgId: otherOrg.id,
+        extra: {
+          fields: [
+            {
+              name: 'text',
+              type: ScalarTypes.STRING,
+              required: false,
+              container: null,
+            },
+          ],
+        },
+      });
+      const { queue: otherQueue } = await createMrtQueue({
+        orgId: otherOrg.id,
+        mrtService: manualReviewToolService,
+        userId: otherUser.id,
+      });
+
+      for (const name of ['Other org rule 1', 'Other org rule 2']) {
+        await manualReviewToolService.createRoutingRule({
+          orgId: otherOrg.id,
+          name,
+          status: 'LIVE',
+          itemTypeIds: [otherItemTypes[0].id as NonEmptyString],
+          creatorId: '',
+          conditionSet: {
+            conjunction: 'OR',
+            conditions: [
+              {
+                input: {
+                  type: 'CONTENT_COOP_INPUT',
+                  name: 'Source',
+                },
+                threshold: 'post-actions',
+                comparator: 'EQUALS',
+              },
+            ],
+          },
+          destinationQueueId: otherQueue.id,
+        });
+      }
+
+      const otherOrgOrder = (
+        await manualReviewToolService.getRoutingRules({
+          orgId: otherOrg.id,
+          directives: { maxAge: 0 },
+        })
+      ).map((rule) => rule.id);
+      const order = (
+        await manualReviewToolService.getRoutingRules({
+          orgId: org.id,
+          directives: { maxAge: 0 },
+        })
+      ).map((rule) => rule.id);
+
+      await manualReviewToolService.reorderRoutingRules({
+        orgId: org.id,
+        order: order.toReversed(),
+      });
+
+      const otherOrgOrderAfter = (
+        await manualReviewToolService.getRoutingRules({
+          orgId: otherOrg.id,
+          directives: { maxAge: 0 },
+        })
+      ).map((rule) => rule.id);
+
+      expect(otherOrgOrderAfter).toEqual(otherOrgOrder);
     },
   );
 
