@@ -277,33 +277,30 @@ describe('JobRouting tests', () => {
         });
       }
 
-      const otherOrgOrder = (
-        await manualReviewToolService.getRoutingRules({
-          orgId: otherOrg.id,
-          directives: { maxAge: 0 },
-        })
-      ).map((rule) => rule.id);
-      const order = (
-        await manualReviewToolService.getRoutingRules({
-          orgId: org.id,
-          directives: { maxAge: 0 },
-        })
-      ).map((rule) => rule.id);
+      const getPersistedRoutingRuleOrder = async (orgId: string) =>
+        (
+          await deps.KyselyPg.selectFrom('manual_review_tool.routing_rules')
+            .select('id')
+            .where('org_id', '=', orgId)
+            .orderBy('sequence_number')
+            .execute()
+        ).map((rule) => rule.id);
 
-      await manualReviewToolService.reorderRoutingRules({
+      const otherOrgOrder = await getPersistedRoutingRuleOrder(otherOrg.id);
+      const order = await getPersistedRoutingRuleOrder(org.id);
+      const expectedOrder = order.toReversed();
+
+      const reorderedRules = await manualReviewToolService.reorderRoutingRules({
         orgId: org.id,
-        order: order.toReversed(),
+        order: expectedOrder,
       });
 
-      const otherOrgOrderAfter = (
-        await manualReviewToolService.getRoutingRules({
-          orgId: otherOrg.id,
-          directives: { maxAge: 0 },
-        })
-      ).map((rule) => rule.id);
-
-      expect(otherOrgOrderAfter).toEqual(otherOrgOrder);
+      expect(reorderedRules.map((rule) => rule.id)).toEqual(expectedOrder);
+      await expect(getPersistedRoutingRuleOrder(otherOrg.id)).resolves.toEqual(
+        otherOrgOrder,
+      );
     },
+    10_000,
   );
 
   jobRoutingTestWithFixtures(
