@@ -273,7 +273,9 @@ export default function PolicyForm() {
                   },
                   onCompleted: ({ addPolicies }) => {
                     if (addPolicies.failures.length > 0) {
-                      setErrorMessage('Error saving policy. Please try again.');
+                      setErrorMessage(
+                        `Error saving policy: "${addPolicies.failures[0]}" may already exist.`,
+                      );
                       return;
                     }
                     setShowSuccess(true);

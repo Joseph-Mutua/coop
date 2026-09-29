@@ -112,7 +112,9 @@ describe('PolicyForm', () => {
     await submitPolicy('Duplicate Policy');
 
     expect(
-      screen.getByText('Error saving policy. Please try again.'),
+      screen.getByText(
+        'Error saving policy: "Duplicate Policy" may already exist.',
+      ),
     ).toBeTruthy();
     expect(screen.queryByText('Policy Created')).toBeNull();
   });
