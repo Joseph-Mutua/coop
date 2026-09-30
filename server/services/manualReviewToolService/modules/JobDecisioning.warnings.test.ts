@@ -7,6 +7,7 @@ import createContentItemTypes from '../../../test/fixtureHelpers/createContentIt
 import createMrtQueue from '../../../test/fixtureHelpers/createMrtQueue.js';
 import createOrg from '../../../test/fixtureHelpers/createOrg.js';
 import createUser from '../../../test/fixtureHelpers/createUser.js';
+import createUserItemTypes from '../../../test/fixtureHelpers/createUserItemTypes.js';
 import { makeTestWithFixture } from '../../../test/utils.js';
 import { instantiateOpaqueType } from '../../../utils/typescript-types.js';
 import {
@@ -14,6 +15,7 @@ import {
   type NormalizedItemData,
 } from '../../itemProcessingService/index.js';
 import { type ItemSubmissionWithTypeIdentifier } from '../../itemProcessingService/makeItemSubmissionWithTypeIdentifier.js';
+import { type ItemType } from '../../moderationConfigService/index.js';
 import { type NcmecReportingServicePg } from '../../ncmecService/dbTypes.js';
 import {
   NCMEC_ESCALATION_SKIP_WARNING,
@@ -35,12 +37,29 @@ const testWithFixture = () =>
       container.KyselyPg,
       org.id,
     );
-    const { itemTypes, cleanup: itemTypesCleanup } =
-      await createContentItemTypes({
+    const { itemTypes: userItemTypes, cleanup: userItemTypesCleanup } =
+      await createUserItemTypes({
         moderationConfigService: container.ModerationConfigService,
         orgId: org.id,
         extra: {},
       });
+    const {
+      itemTypes: contentItemTypesWithoutCreator,
+      cleanup: contentItemTypesWithoutCreatorCleanup,
+    } = await createContentItemTypes({
+      moderationConfigService: container.ModerationConfigService,
+      orgId: org.id,
+      extra: {},
+    });
+    const {
+      itemTypes: contentItemTypesWithCreator,
+      cleanup: contentItemTypesWithCreatorCleanup,
+    } = await createContentItemTypes({
+      moderationConfigService: container.ModerationConfigService,
+      orgId: org.id,
+      includeCreator: true,
+      extra: {},
+    });
     const { queue, cleanup: queueCleanup } = await createMrtQueue({
       orgId: org.id,
       mrtService: container.ManualReviewToolService,
@@ -51,15 +70,17 @@ const testWithFixture = () =>
     const queueOps = mrtService['queueOps'];
     const ncmecPg = container.KyselyPg as Kysely<NcmecReportingServicePg>;
 
-    const addFreshJob = async () => {
+    const addFreshJob = async (
+      itemType: ItemType = userItemTypes[0],
+      data: NormalizedItemData = instantiateOpaqueType<NormalizedItemData>({}),
+    ) => {
       const item = instantiateOpaqueType<ItemSubmissionWithTypeIdentifier>({
         submissionId: makeSubmissionId(),
         submissionTime: new Date(),
-        // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-        data: {} as NormalizedItemData,
+        data,
         itemTypeIdentifier: {
-          id: itemTypes[0].id,
-          version: itemTypes[0].version,
+          id: itemType.id,
+          version: itemType.version,
           schemaVariant: 'original',
         },
         creator: { id: uuidv1(), typeId: uuidv1() },
@@ -135,15 +156,23 @@ const testWithFixture = () =>
 
     return {
       addFreshJob,
+      contentItemTypeWithCreator: contentItemTypesWithCreator[0],
+      contentItemTypeWithoutCreator: contentItemTypesWithoutCreator[0],
       decideNextJob,
+      mrtService,
+      org,
+      queue,
       insertNcmecReport,
+      userItemType: userItemTypes[0],
       cleanup: async () => {
         await ncmecPg
           .deleteFrom('ncmec_reporting.ncmec_reports')
           .where('org_id', '=', org.id)
           .execute();
         await queueCleanup();
-        await itemTypesCleanup();
+        await contentItemTypesWithCreatorCleanup();
+        await contentItemTypesWithoutCreatorCleanup();
+        await userItemTypesCleanup();
         await userCleanup();
         await orgCleanup();
         await container.KyselyPg.destroy();
@@ -187,6 +216,62 @@ describe('JobDecisioning NCMEC escalation skip warnings', () => {
       await addFreshJob();
       const result = await decideNextJob([{ type: 'IGNORE' }]);
       expect(result.warnings).toEqual([]);
+    },
+  );
+});
+
+describe('JobDecisioning NCMEC escalation eligibility', () => {
+  testWithFixture()(
+    'allows Content whose creator references a User item type',
+    async ({
+      addFreshJob,
+      contentItemTypeWithCreator,
+      decideNextJob,
+      userItemType,
+    }) => {
+      await addFreshJob(
+        contentItemTypeWithCreator,
+        instantiateOpaqueType<NormalizedItemData>({
+          creatorId: { id: uuidv1(), typeId: userItemType.id },
+        }),
+      );
+
+      await expect(
+        decideNextJob([
+          { type: 'TRANSFORM_JOB_AND_RECREATE_IN_QUEUE', newJobKind: 'NCMEC' },
+        ]),
+      ).resolves.toEqual({ warnings: [] });
+    },
+  );
+
+  testWithFixture()(
+    'rejects Content without a creator and leaves the review job in its queue',
+    async ({
+      addFreshJob,
+      contentItemTypeWithoutCreator,
+      decideNextJob,
+      mrtService,
+      org,
+      queue,
+    }) => {
+      await addFreshJob(contentItemTypeWithoutCreator);
+
+      await expect(
+        decideNextJob([
+          { type: 'TRANSFORM_JOB_AND_RECREATE_IN_QUEUE', newJobKind: 'NCMEC' },
+        ]),
+      ).rejects.toMatchObject({
+        name: 'NcmecEscalationUnavailableError',
+        status: 400,
+        detail:
+          'Content items must have a creator ID that references a User item before they can be enqueued to NCMEC.',
+      });
+
+      const remainingJobs = await mrtService.getAllJobsForQueue({
+        orgId: org.id,
+        queueId: queue.id,
+      });
+      expect(remainingJobs).toHaveLength(1);
     },
   );
 });

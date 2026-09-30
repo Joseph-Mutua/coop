@@ -363,6 +363,69 @@ export default class JobDecisioning {
     }
   }
 
+  private async assertNcmecEscalationIsSupported(opts: {
+    orgId: string;
+    job: ManualReviewJob | ManualReviewAppealJob;
+    decisionComponents: readonly ManualReviewDecisionComponent[];
+  }) {
+    const { orgId, job, decisionComponents } = opts;
+    const escalatesToNcmec = decisionComponents.some(
+      (decision) =>
+        decision.type === 'TRANSFORM_JOB_AND_RECREATE_IN_QUEUE' &&
+        decision.newJobKind === 'NCMEC',
+    );
+    if (!escalatesToNcmec) {
+      return;
+    }
+
+    const reportedItemType = await this.moderationConfigService.getItemType({
+      orgId,
+      itemTypeSelector: job.payload.item.itemTypeIdentifier,
+    });
+    if (reportedItemType == null) {
+      throw makeNcmecEscalationUnavailableError({
+        detail: "The reported item's type could not be found.",
+        shouldErrorSpan: true,
+      });
+    }
+    if (reportedItemType.kind === 'USER') {
+      return;
+    }
+    if (reportedItemType.kind !== 'CONTENT') {
+      throw makeNcmecEscalationUnavailableError({
+        detail:
+          'Only User items and Content items with a User creator can be enqueued to NCMEC.',
+        shouldErrorSpan: true,
+      });
+    }
+
+    const creator = getFieldValueForRole(
+      reportedItemType.schema,
+      reportedItemType.schemaFieldRoles,
+      'creatorId',
+      job.payload.item.data,
+    );
+    if (creator == null) {
+      throw makeNcmecEscalationUnavailableError({
+        detail:
+          'Content items must have a creator ID that references a User item before they can be enqueued to NCMEC.',
+        shouldErrorSpan: true,
+      });
+    }
+
+    const creatorItemType = await this.moderationConfigService.getItemType({
+      orgId,
+      itemTypeSelector: { id: creator.typeId },
+    });
+    if (creatorItemType?.kind !== 'USER') {
+      throw makeNcmecEscalationUnavailableError({
+        detail:
+          "The content item's creator must reference a User item type before it can be enqueued to NCMEC.",
+        shouldErrorSpan: true,
+      });
+    }
+  }
+
   async submitDecision(opts: SubmitDecisionInput) {
     const {
       queueId,
@@ -400,6 +463,17 @@ export default class JobDecisioning {
       });
     }
     const decisions = decisionComponents ?? [automaticCloseDecision];
+
+    // NCMEC jobs are user-centric. Validate that the reviewed item can resolve
+    // to a User before recording the decision or removing the original job.
+    // The UI prevents this submission too, but API and stale clients can bypass
+    // that check. Running this before either mutation keeps the review job
+    // available when the escalation cannot be created.
+    await this.assertNcmecEscalationIsSupported({
+      orgId,
+      job,
+      decisionComponents: decisions,
+    });
 
     // If the decision included some actionIds or policyIds, we want to verify
     // that those ids actually correspond to known actions/policies in the org
@@ -1156,7 +1230,8 @@ export type SubmitDecisionErrorType =
   | 'NoJobWithIdInQueueError'
   | 'RecordingJobDecisionFailedError'
   | 'MissingRequiredDecisionReasonError'
-  | 'MissingRequiredPolicyForDecisionError';
+  | 'MissingRequiredPolicyForDecisionError'
+  | 'NcmecEscalationUnavailableError';
 
 export const makeJobHasAlreadyBeenSubmittedError = (data: ErrorInstanceData) =>
   new CoopError({
@@ -1215,5 +1290,14 @@ export const makeMissingRequiredPolicyForDecisionError = (
     title:
       'This org requires every decision to include at least one policy. Pick a policy and resubmit.',
     name: 'MissingRequiredPolicyForDecisionError',
+    ...data,
+  });
+
+export const makeNcmecEscalationUnavailableError = (data: ErrorInstanceData) =>
+  new CoopError({
+    status: 400,
+    type: [ErrorType.InvalidUserInput],
+    title: 'This item cannot be enqueued to NCMEC.',
+    name: 'NcmecEscalationUnavailableError',
     ...data,
   });
