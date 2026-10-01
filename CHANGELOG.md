@@ -8,7 +8,7 @@ For more information about each release including git tags and artifacts, see [R
 
 ## [Unreleased]
 
-## [1.1.1] - 2026-10-30
+## [1.1.1] - 2026-10-01
 
 ### Security
 
