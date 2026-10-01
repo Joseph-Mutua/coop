@@ -98,16 +98,6 @@ export default class NcmecEnqueueToMrt {
       );
     }
 
-    const hasExistingReport =
-      await this.ncmecReporting.getUserHasExistingNcmeReport({
-        orgId,
-        userId: input.item.itemId,
-        userItemTypeId: input.item.itemTypeIdentifier.id,
-      });
-    if (hasExistingReport) {
-      return { status: 'SKIPPED' };
-    }
-
     const userSubmissionResult = await this.#getFullUserFromItem({
       orgId: input.orgId,
       itemSubmission: itemSubmissionWithTypeIdentifierToItemSubmission(
@@ -131,6 +121,17 @@ export default class NcmecEnqueueToMrt {
         ),
       });
     }
+
+    const hasExistingReport =
+      await this.ncmecReporting.getUserHasExistingNcmeReport({
+        orgId,
+        userId: userSubmission.itemId,
+        userItemTypeId: userSubmission.itemType.id,
+      });
+    if (hasExistingReport) {
+      return { status: 'SKIPPED' };
+    }
+
     try {
       await withRetries(
         {

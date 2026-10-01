@@ -72,7 +72,16 @@ const fullUserSubmission = {
 
 async function* emptyAsyncIterable(): AsyncGenerator<never> {}
 
-function makeEnqueue(enqueueSpy: Mock): NcmecEnqueueToMrt {
+type ExistingReportCheck = (params: {
+  orgId: string;
+  userId: string;
+  userItemTypeId: string;
+}) => Promise<boolean>;
+
+function makeEnqueue(
+  enqueueSpy: Mock,
+  existingReportCheck: ExistingReportCheck = async () => false,
+): NcmecEnqueueToMrt {
   return new NcmecEnqueueToMrt(
     {
       getPartialItems: async () => [fullUserSubmission],
@@ -91,7 +100,7 @@ function makeEnqueue(enqueueSpy: Mock): NcmecEnqueueToMrt {
     (async () => ({ status: 200 })) as unknown as never,
     { sign: () => undefined } as unknown as never,
     {
-      getUserHasExistingNcmeReport: async () => false,
+      getUserHasExistingNcmeReport: existingReportCheck,
     } as unknown as NcmecReporting,
   );
 }
@@ -143,5 +152,32 @@ describe('NcmecEnqueueToMrt reportedMessages in the job payload', () => {
     const payload = enqueuedPayload(enqueueSpy);
     expect(payload.kind).toBe('NCMEC');
     expect(payload).not.toHaveProperty('reportedMessages');
+  });
+});
+
+describe('NcmecEnqueueToMrt existing-report checks', () => {
+  it('checks the resolved creator when the reported item is Content', async () => {
+    const enqueueSpy = vi.fn(async () => undefined);
+    const existingReportCheck = vi.fn(async () => true);
+
+    const result = await makeEnqueue(
+      enqueueSpy,
+      existingReportCheck,
+    ).enqueueForHumanReviewIfApplicable({
+      orgId: 'org-1',
+      createdAt: new Date('2026-01-02T00:00:00Z'),
+      item: messageItem,
+      correlationId: 'corr-1' as unknown as never,
+      enqueueSource: 'REPORT',
+      enqueueSourceInfo: { kind: 'REPORT' },
+    });
+
+    expect(existingReportCheck).toHaveBeenCalledWith({
+      orgId: 'org-1',
+      userId: 'user-1',
+      userItemTypeId: 'user-type',
+    });
+    expect(result).toEqual({ status: 'SKIPPED' });
+    expect(enqueueSpy).not.toHaveBeenCalled();
   });
 });

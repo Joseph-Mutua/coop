@@ -21,6 +21,7 @@ import {
   NCMEC_ESCALATION_SKIP_WARNING,
   type ManualReviewDecisionComponent,
 } from './JobDecisioning.js';
+import { jobIdToGuid } from './QueueOperations.js';
 
 const testWithFixture = () =>
   makeTestWithFixture(async () => {
@@ -67,6 +68,7 @@ const testWithFixture = () =>
     });
 
     const mrtService = container.ManualReviewToolService;
+    const mrtPg = mrtService['pgQuery'];
     const queueOps = mrtService['queueOps'];
     const ncmecPg = container.KyselyPg as Kysely<NcmecReportingServicePg>;
 
@@ -163,6 +165,8 @@ const testWithFixture = () =>
       org,
       queue,
       insertNcmecReport,
+      mrtPg,
+      user,
       userItemType: userItemTypes[0],
       cleanup: async () => {
         await ncmecPg
@@ -211,6 +215,33 @@ describe('JobDecisioning NCMEC escalation skip warnings', () => {
   );
 
   testWithFixture()(
+    "warns when the escalated Content item's creator already has a submitted NCMEC report",
+    async ({
+      addFreshJob,
+      contentItemTypeWithCreator,
+      decideNextJob,
+      insertNcmecReport,
+      userItemType,
+    }) => {
+      const creator = { id: uuidv1(), typeId: userItemType.id };
+      await addFreshJob(
+        contentItemTypeWithCreator,
+        instantiateOpaqueType<NormalizedItemData>({ creatorId: creator }),
+      );
+      await insertNcmecReport({
+        userId: creator.id,
+        userItemTypeId: creator.typeId,
+      });
+
+      const result = await decideNextJob([
+        { type: 'TRANSFORM_JOB_AND_RECREATE_IN_QUEUE', newJobKind: 'NCMEC' },
+      ]);
+
+      expect(result.warnings).toEqual([NCMEC_ESCALATION_SKIP_WARNING]);
+    },
+  );
+
+  testWithFixture()(
     'returns no warnings for a decision that does not escalate to NCMEC',
     async ({ addFreshJob, decideNextJob }) => {
       await addFreshJob();
@@ -249,17 +280,40 @@ describe('JobDecisioning NCMEC escalation eligibility', () => {
     async ({
       addFreshJob,
       contentItemTypeWithoutCreator,
-      decideNextJob,
+      mrtPg,
       mrtService,
       org,
       queue,
+      user,
     }) => {
       await addFreshJob(contentItemTypeWithoutCreator);
 
+      const dequeuedJob = await mrtService.dequeueNextJob({
+        orgId: org.id,
+        queueId: queue.id,
+        userId: user.id,
+      });
+      if (!dequeuedJob) {
+        throw new Error("should've returned a job");
+      }
+
       await expect(
-        decideNextJob([
-          { type: 'TRANSFORM_JOB_AND_RECREATE_IN_QUEUE', newJobKind: 'NCMEC' },
-        ]),
+        mrtService.submitDecision({
+          queueId: queue.id,
+          reportHistory: [],
+          jobId: dequeuedJob.job.id,
+          lockToken: dequeuedJob.lockToken,
+          decisionComponents: [
+            {
+              type: 'TRANSFORM_JOB_AND_RECREATE_IN_QUEUE',
+              newJobKind: 'NCMEC',
+            },
+          ],
+          relatedActions: [],
+          reviewerId: user.id,
+          reviewerEmail: 'test@test.com',
+          orgId: org.id,
+        }),
       ).rejects.toMatchObject({
         name: 'NcmecEscalationUnavailableError',
         status: 400,
@@ -267,11 +321,25 @@ describe('JobDecisioning NCMEC escalation eligibility', () => {
           'Content items must have a creator ID that references a User item before they can be enqueued to NCMEC.',
       });
 
-      const remainingJobs = await mrtService.getAllJobsForQueue({
+      const decision = await mrtPg
+        .selectFrom('manual_review_tool.manual_review_decisions')
+        .select('id')
+        .where('id', '=', jobIdToGuid(dequeuedJob.job.id))
+        .executeTakeFirst();
+      expect(decision).toBeUndefined();
+
+      await mrtService.releaseJobLock({
         orgId: org.id,
         queueId: queue.id,
+        jobId: dequeuedJob.job.id,
+        lockToken: dequeuedJob.lockToken,
       });
-      expect(remainingJobs).toHaveLength(1);
+      const retriedJob = await mrtService.dequeueNextJob({
+        orgId: org.id,
+        queueId: queue.id,
+        userId: user.id,
+      });
+      expect(retriedJob?.job.id).toBe(dequeuedJob.job.id);
     },
   );
 });

@@ -367,7 +367,7 @@ export default class JobDecisioning {
     orgId: string;
     job: ManualReviewJob | ManualReviewAppealJob;
     decisionComponents: readonly ManualReviewDecisionComponent[];
-  }) {
+  }): Promise<{ userId: string; userItemTypeId: string } | undefined> {
     const { orgId, job, decisionComponents } = opts;
     const escalatesToNcmec = decisionComponents.some(
       (decision) =>
@@ -389,7 +389,10 @@ export default class JobDecisioning {
       });
     }
     if (reportedItemType.kind === 'USER') {
-      return;
+      return {
+        userId: job.payload.item.itemId,
+        userItemTypeId: reportedItemType.id,
+      };
     }
     if (reportedItemType.kind !== 'CONTENT') {
       throw makeNcmecEscalationUnavailableError({
@@ -424,6 +427,11 @@ export default class JobDecisioning {
         shouldErrorSpan: true,
       });
     }
+
+    return {
+      userId: creator.id,
+      userItemTypeId: creatorItemType.id,
+    };
   }
 
   async submitDecision(opts: SubmitDecisionInput) {
@@ -469,7 +477,7 @@ export default class JobDecisioning {
     // The UI prevents this submission too, but API and stale clients can bypass
     // that check. Running this before either mutation keeps the review job
     // available when the escalation cannot be created.
-    await this.assertNcmecEscalationIsSupported({
+    const ncmecEscalationUser = await this.assertNcmecEscalationIsSupported({
       orgId,
       job,
       decisionComponents: decisions,
@@ -745,7 +753,10 @@ export default class JobDecisioning {
     return {
       warnings:
         newDecisionStored && automaticCloseDecision === undefined
-          ? await this.#ncmecEscalationSkipWarnings({ decisionComponents, job })
+          ? await this.#ncmecEscalationSkipWarnings({
+              ncmecEscalationUser,
+              orgId: job.orgId,
+            })
           : [],
     };
   }
@@ -753,31 +764,22 @@ export default class JobDecisioning {
   /**
    * The NCMEC re-enqueue for a TRANSFORM_JOB_AND_RECREATE_IN_QUEUE decision
    * runs asynchronously via onRecordDecision, and it silently no-ops when the
-   * reviewed user already has a submitted NCMEC report (see
+   * resolved user already has a submitted NCMEC report (see
    * NcmecEnqueueToMrt.enqueueForHumanReviewIfApplicable). Predict that skip
    * here, with the same check the enqueue path performs, so the reviewer is
    * told on the decision response instead of believing the escalation went
    * through.
    */
   async #ncmecEscalationSkipWarnings(opts: {
-    decisionComponents: ManualReviewDecisionComponent[];
-    job: {
-      orgId: string;
-      payload: { item: { itemId: string; itemTypeIdentifier: { id: string } } };
-    };
+    ncmecEscalationUser: { userId: string; userItemTypeId: string } | undefined;
+    orgId: string;
   }): Promise<string[]> {
-    const escalatesToNcmec = opts.decisionComponents.some(
-      (it) =>
-        it.type === 'TRANSFORM_JOB_AND_RECREATE_IN_QUEUE' &&
-        it.newJobKind === 'NCMEC',
-    );
-    if (!escalatesToNcmec) {
+    if (opts.ncmecEscalationUser == null) {
       return [];
     }
     const hasExistingReport = await this.getUserHasExistingNcmecReport({
-      orgId: opts.job.orgId,
-      userId: opts.job.payload.item.itemId,
-      userItemTypeId: opts.job.payload.item.itemTypeIdentifier.id,
+      orgId: opts.orgId,
+      ...opts.ncmecEscalationUser,
     });
 
     return hasExistingReport ? [NCMEC_ESCALATION_SKIP_WARNING] : [];

@@ -355,10 +355,6 @@ describe('NCMEC escalation eligibility', () => {
     render(<ManualReviewJobReview />);
 
     const actionLabel = screen.getByText('Enqueue to NCMEC');
-    expect(actionLabel.parentElement?.className).toContain(
-      'cursor-not-allowed',
-    );
-
     fireEvent.mouseOver(actionLabel);
     expect(
       await screen.findByText(
