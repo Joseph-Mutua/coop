@@ -8,6 +8,10 @@ For more information about each release including git tags and artifacts, see [R
 
 ## [Unreleased]
 
+### Security
+
+- Block hash-exchange credential updates when an instance hosts multiple organizations ([#1330](https://github.com/roostorg/coop/pull/1330) by [@reitblatt](https://github.com/reitblatt))
+
 ## [1.1.0] - 2026-09-29
 
 ### Added
