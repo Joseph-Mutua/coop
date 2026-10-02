@@ -8,7 +8,12 @@ import {
 import { type Dependencies } from '../../iocContainer/index.js';
 import { asyncIterableToArray } from '../../utils/collections.js';
 import { jsonStringify } from '../../utils/encoding.js';
-import { __throw, safePick, withRetries } from '../../utils/misc.js';
+import {
+  __throw,
+  assertUnreachable,
+  safePick,
+  withRetries,
+} from '../../utils/misc.js';
 import { instantiateOpaqueType } from '../../utils/typescript-types.js';
 import { type ActionExecutionCorrelationId } from '../analyticsLoggers/ActionExecutionLogger.js';
 import { type RuleExecutionCorrelationId } from '../analyticsLoggers/ruleExecutionLoggingUtils.js';
@@ -125,6 +130,8 @@ export default class NcmecEnqueueToMrt {
             `Cannot create NCMEC job: Cannot determine user from item type ${reportedItemType.kind}. ` +
               'Please report the USER directly.',
           );
+        default:
+          return assertUnreachable(targetUser.reason);
       }
     }
 

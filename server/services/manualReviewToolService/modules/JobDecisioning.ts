@@ -412,6 +412,8 @@ export default class JobDecisioning {
           detail =
             "The content item's creator must reference a User item type before it can be enqueued to NCMEC.";
           break;
+        default:
+          return assertUnreachable(targetUser.reason);
       }
       throw makeNcmecEscalationUnavailableError({
         detail,
