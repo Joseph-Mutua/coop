@@ -111,7 +111,8 @@ export default class NcmecEnqueueToMrt {
     });
 
     if (!targetUser.success) {
-      switch (targetUser.reason) {
+      const reason = targetUser.reason;
+      switch (reason) {
         case 'MISSING_CREATOR':
           throw new Error(
             'Cannot create NCMEC job: Content item does not have a creatorId field configured. ' +
@@ -131,7 +132,7 @@ export default class NcmecEnqueueToMrt {
               'Please report the USER directly.',
           );
         default:
-          return assertUnreachable(targetUser.reason);
+          return assertUnreachable(reason);
       }
     }
 

@@ -397,8 +397,9 @@ export default class JobDecisioning {
       moderationConfigService: this.moderationConfigService,
     });
     if (!targetUser.success) {
+      const reason = targetUser.reason;
       let detail: string;
-      switch (targetUser.reason) {
+      switch (reason) {
         case 'UNSUPPORTED_ITEM_TYPE':
           detail =
             'Only User items and Content items with a User creator can be enqueued to NCMEC.';
@@ -413,7 +414,7 @@ export default class JobDecisioning {
             "The content item's creator must reference a User item type before it can be enqueued to NCMEC.";
           break;
         default:
-          return assertUnreachable(targetUser.reason);
+          return assertUnreachable(reason);
       }
       throw makeNcmecEscalationUnavailableError({
         detail,
