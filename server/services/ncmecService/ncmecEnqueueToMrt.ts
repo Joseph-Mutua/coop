@@ -4,7 +4,6 @@ import {
   isMediaType,
   type ItemIdentifier,
 } from '@roostorg/coop-types';
-import { match } from 'ts-pattern';
 
 import { type Dependencies } from '../../iocContainer/index.js';
 import { asyncIterableToArray } from '../../utils/collections.js';
@@ -14,10 +13,7 @@ import { instantiateOpaqueType } from '../../utils/typescript-types.js';
 import { type ActionExecutionCorrelationId } from '../analyticsLoggers/ActionExecutionLogger.js';
 import { type RuleExecutionCorrelationId } from '../analyticsLoggers/ruleExecutionLoggingUtils.js';
 import { RETURN_UNLIMITED_RESULTS_AND_POTENTIALLY_HANG_DB } from '../itemInvestigationService/index.js';
-import {
-  getFieldValueForRole,
-  getValuesFromFields,
-} from '../itemProcessingService/extractItemDataValues.js';
+import { getValuesFromFields } from '../itemProcessingService/extractItemDataValues.js';
 import {
   type ItemSubmission,
   type NormalizedItemData,
@@ -37,6 +33,7 @@ import {
 } from '../manualReviewToolService/manualReviewToolService.js';
 import { type ItemType } from '../moderationConfigService/types/itemTypes.js';
 import type NcmecReporting from './ncmecReporting.js';
+import { resolveNcmecTargetUser } from './resolveNcmecTargetUser.js';
 
 export default class NcmecEnqueueToMrt {
   constructor(
@@ -83,10 +80,8 @@ export default class NcmecEnqueueToMrt {
   ) {
     const { orgId, createdAt } = input;
 
-    // Fetch as much info about the reported user as we can get from
-    // the organization's partial items endpoint, and if the reported item is
-    // content, then convert it to the user who created the content because
-    // NCMEC jobs must be tied to users.
+    // Resolve the target User before fetching their item data so an existing
+    // report can skip the slower Partial Items lookup.
     const reportedItemType = await this.moderationConfigService.getItemType({
       orgId: input.orgId,
       itemTypeSelector: input.item.itemTypeIdentifier,
@@ -98,13 +93,58 @@ export default class NcmecEnqueueToMrt {
       );
     }
 
-    const userSubmissionResult = await this.#getFullUserFromItem({
-      orgId: input.orgId,
-      itemSubmission: itemSubmissionWithTypeIdentifierToItemSubmission(
-        input.item,
-        reportedItemType,
-      ),
+    const reportedItem = itemSubmissionWithTypeIdentifierToItemSubmission(
+      input.item,
+      reportedItemType,
+    );
+    const targetUser = await resolveNcmecTargetUser({
+      orgId,
+      itemId: reportedItem.itemId,
+      itemType: reportedItemType,
+      data: reportedItem.data,
+      moderationConfigService: this.moderationConfigService,
     });
+
+    if (!targetUser.success) {
+      switch (targetUser.reason) {
+        case 'MISSING_CREATOR':
+          throw new Error(
+            'Cannot create NCMEC job: Content item does not have a creatorId field configured. ' +
+              'Please add the creatorId role to the owner/creator field in your item type schema.',
+          );
+        case 'CREATOR_ITEM_TYPE_NOT_FOUND':
+          throw new Error(
+            `Cannot create NCMEC job: User item type ${targetUser.creatorIdentifier.typeId} not found.`,
+          );
+        case 'CREATOR_ITEM_TYPE_NOT_USER':
+          throw new Error(
+            `Cannot create NCMEC job: Item type ${targetUser.creatorIdentifier.typeId} is not a USER type (it's ${targetUser.creatorItemType.kind}).`,
+          );
+        case 'UNSUPPORTED_ITEM_TYPE':
+          throw new Error(
+            `Cannot create NCMEC job: Cannot determine user from item type ${reportedItemType.kind}. ` +
+              'Please report the USER directly.',
+          );
+      }
+    }
+
+    const hasExistingReport =
+      await this.ncmecReporting.getUserHasExistingNcmeReport({
+        orgId,
+        userId: targetUser.userIdentifier.id,
+        userItemTypeId: targetUser.userItemType.id,
+      });
+    if (hasExistingReport) {
+      return { status: 'SKIPPED' };
+    }
+
+    const userSubmissionResult =
+      reportedItemType.kind === 'USER'
+        ? { success: true as const, submission: reportedItem }
+        : await this.#getFullUserSubmission({
+            orgId,
+            userIdentifier: targetUser.userIdentifier,
+          });
 
     let userSubmission;
     if (userSubmissionResult.success) {
@@ -112,24 +152,11 @@ export default class NcmecEnqueueToMrt {
     } else {
       // Create a minimal user submission for manual review
       // even if we couldn't fetch full data
-      userSubmission = await this.#createMinimalUserSubmission({
-        orgId,
-        reportedItemType,
-        reportedItem: itemSubmissionWithTypeIdentifierToItemSubmission(
-          input.item,
-          reportedItemType,
-        ),
+      userSubmission = this.#createMinimalUserSubmission({
+        reportedItem,
+        userIdentifier: targetUser.userIdentifier,
+        userItemType: targetUser.userItemType,
       });
-    }
-
-    const hasExistingReport =
-      await this.ncmecReporting.getUserHasExistingNcmeReport({
-        orgId,
-        userId: userSubmission.itemId,
-        userItemTypeId: userSubmission.itemType.id,
-      });
-    if (hasExistingReport) {
-      return { status: 'SKIPPED' };
     }
 
     try {
@@ -364,50 +391,18 @@ export default class NcmecEnqueueToMrt {
   // we don't know how to find threads that this user "created" or "owns". So we
   // don't look for threads. We also don't look for users because we know what item
   // type this user corresponds to. So we just look for content types.
-  async #getFullUserFromItem(
-    opts: {
-      orgId: string;
-    } & (
-      | { itemSubmission: ItemSubmission; userIdentifier?: undefined }
-      | { itemSubmission?: undefined; userIdentifier: ItemIdentifier }
-    ),
-  ): Promise<
+  async #getFullUserSubmission(opts: {
+    orgId: string;
+    userIdentifier: ItemIdentifier;
+  }): Promise<
     { success: true; submission: ItemSubmission } | { success: false }
   > {
-    const { orgId, itemSubmission, userIdentifier } = opts;
+    const { orgId, userIdentifier } = opts;
 
     const userItem = await (async (): Promise<ItemSubmission | null> => {
-      if (itemSubmission?.itemType.kind === 'USER') {
-        return itemSubmission;
-      }
-
-      const userItemId =
-        userIdentifier ??
-        match(itemSubmission.itemType)
-          .with({ kind: 'CONTENT' }, (type) => {
-            // We want to enqueue the creator of the content.
-            const creator = getFieldValueForRole(
-              type.schema,
-              type.schemaFieldRoles,
-              'creatorId',
-              itemSubmission.data,
-            );
-
-            return creator ?? null;
-          })
-          .with({ kind: 'THREAD' }, () => {
-            // We might need to enqueue all users in the thread, but TBD
-            return null;
-          })
-          .exhaustive();
-
-      if (!userItemId) {
-        return null;
-      }
-
       const fetchedUser = await this.#getItemSubmissionforItemId(
         orgId,
-        userItemId,
+        userIdentifier,
       );
 
       // If partial items endpoint is not available, try fallbacks
@@ -416,7 +411,7 @@ export default class NcmecEnqueueToMrt {
         const investigatedUserResult =
           await this.itemInvestigationService.getItemByIdentifier({
             orgId,
-            itemIdentifier: userItemId,
+            itemIdentifier: userIdentifier,
             latestSubmissionOnly: true,
           });
 
@@ -439,73 +434,25 @@ export default class NcmecEnqueueToMrt {
     return { success: true, submission: userItem };
   }
 
-  async #createMinimalUserSubmission(opts: {
-    orgId: string;
-    reportedItemType: ItemType;
+  #createMinimalUserSubmission(opts: {
     reportedItem: ItemSubmission;
-  }): Promise<ItemSubmission> {
-    const { orgId, reportedItemType, reportedItem } = opts;
+    userIdentifier: ItemIdentifier;
+    userItemType: ItemType & { kind: 'USER' };
+  }): ItemSubmission {
+    const { reportedItem, userIdentifier, userItemType } = opts;
+    // The human reviewer will need to manually add more info.
+    const minimalData: Record<string, unknown> = {
+      userId: userIdentifier.id,
+    };
 
-    // If the reported item is already a USER, use it
-    if (reportedItemType.kind === 'USER') {
-      return reportedItem;
-    }
-
-    // For CONTENT, try to extract the creator ID
-    if (reportedItemType.kind === 'CONTENT') {
-      const creatorId = getFieldValueForRole(
-        reportedItemType.schema,
-        reportedItemType.schemaFieldRoles,
-        'creatorId',
-        reportedItem.data,
-      );
-
-      if (!creatorId) {
-        throw new Error(
-          'Cannot create NCMEC job: Content item does not have a creatorId field configured. ' +
-            'Please add the creatorId role to the owner/creator field in your item type schema.',
-        );
-      }
-
-      // Get the user item type
-      const userItemType = await this.moderationConfigService.getItemType({
-        orgId,
-        itemTypeSelector: { id: creatorId.typeId },
-      });
-
-      if (!userItemType) {
-        throw new Error(
-          `Cannot create NCMEC job: User item type ${creatorId.typeId} not found.`,
-        );
-      }
-
-      if (userItemType.kind !== 'USER') {
-        throw new Error(
-          `Cannot create NCMEC job: Item type ${creatorId.typeId} is not a USER type (it's ${userItemType.kind}).`,
-        );
-      }
-
-      // Create a minimal user submission with just the ID
-      // The human reviewer will need to manually add more info
-      const minimalData: Record<string, unknown> = {
-        userId: creatorId.id,
-      };
-
-      return instantiateOpaqueType<ItemSubmission>({
-        itemId: creatorId.id,
-        itemType: userItemType,
-        data: minimalData as NormalizedItemData,
-        submissionTime: new Date(),
-        submissionId: reportedItem.submissionId,
-        creator: undefined,
-      });
-    }
-
-    // For THREAD or other types, we can't determine the user
-    throw new Error(
-      `Cannot create NCMEC job: Cannot determine user from item type ${reportedItemType.kind}. ` +
-        'Please report the USER directly.',
-    );
+    return instantiateOpaqueType<ItemSubmission>({
+      itemId: userIdentifier.id,
+      itemType: userItemType,
+      data: minimalData as NormalizedItemData,
+      submissionTime: new Date(),
+      submissionId: reportedItem.submissionId,
+      creator: undefined,
+    });
   }
 
   async #getItemSubmissionforItemId(orgId: string, itemId: ItemIdentifier) {

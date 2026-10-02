@@ -18,6 +18,7 @@ import { getFieldValueForRole } from '../../itemProcessingService/index.js';
 import { parseStoredParameters } from '../../moderationConfigService/modules/actionParametersValidation.js';
 import { validateActionParameterValues } from '../../moderationConfigService/modules/actionParameterValueValidation.js';
 import { type NCMECMediaReport } from '../../ncmecService/ncmecReporting.js';
+import { resolveNcmecTargetUser } from '../../ncmecService/resolveNcmecTargetUser.js';
 import {
   type ClearReportsDisposition,
   type ManualReviewToolServicePg,
@@ -388,49 +389,39 @@ export default class JobDecisioning {
         shouldErrorSpan: true,
       });
     }
-    if (reportedItemType.kind === 'USER') {
-      return {
-        userId: job.payload.item.itemId,
-        userItemTypeId: reportedItemType.id,
-      };
-    }
-    if (reportedItemType.kind !== 'CONTENT') {
-      throw makeNcmecEscalationUnavailableError({
-        detail:
-          'Only User items and Content items with a User creator can be enqueued to NCMEC.',
-        shouldErrorSpan: true,
-      });
-    }
-
-    const creator = getFieldValueForRole(
-      reportedItemType.schema,
-      reportedItemType.schemaFieldRoles,
-      'creatorId',
-      job.payload.item.data,
-    );
-    if (creator == null) {
-      throw makeNcmecEscalationUnavailableError({
-        detail:
-          'Content items must have a creator ID that references a User item before they can be enqueued to NCMEC.',
-        shouldErrorSpan: true,
-      });
-    }
-
-    const creatorItemType = await this.moderationConfigService.getItemType({
+    const targetUser = await resolveNcmecTargetUser({
       orgId,
-      itemTypeSelector: { id: creator.typeId },
+      itemId: job.payload.item.itemId,
+      itemType: reportedItemType,
+      data: job.payload.item.data,
+      moderationConfigService: this.moderationConfigService,
     });
-    if (creatorItemType?.kind !== 'USER') {
+    if (!targetUser.success) {
+      let detail: string;
+      switch (targetUser.reason) {
+        case 'UNSUPPORTED_ITEM_TYPE':
+          detail =
+            'Only User items and Content items with a User creator can be enqueued to NCMEC.';
+          break;
+        case 'MISSING_CREATOR':
+          detail =
+            'Content items must have a creator ID that references a User item before they can be enqueued to NCMEC.';
+          break;
+        case 'CREATOR_ITEM_TYPE_NOT_FOUND':
+        case 'CREATOR_ITEM_TYPE_NOT_USER':
+          detail =
+            "The content item's creator must reference a User item type before it can be enqueued to NCMEC.";
+          break;
+      }
       throw makeNcmecEscalationUnavailableError({
-        detail:
-          "The content item's creator must reference a User item type before it can be enqueued to NCMEC.",
+        detail,
         shouldErrorSpan: true,
       });
     }
 
     return {
-      userId: creator.id,
-      userItemTypeId: creatorItemType.id,
+      userId: targetUser.userIdentifier.id,
+      userItemTypeId: targetUser.userItemType.id,
     };
   }
 

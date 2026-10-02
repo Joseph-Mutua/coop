@@ -81,10 +81,11 @@ type ExistingReportCheck = (params: {
 function makeEnqueue(
   enqueueSpy: Mock,
   existingReportCheck: ExistingReportCheck = async () => false,
+  getPartialItems: Mock = vi.fn(async () => [fullUserSubmission]),
 ): NcmecEnqueueToMrt {
   return new NcmecEnqueueToMrt(
     {
-      getPartialItems: async () => [fullUserSubmission],
+      getPartialItems,
     } as unknown as never,
     {
       getItemType: async ({
@@ -159,10 +160,12 @@ describe('NcmecEnqueueToMrt existing-report checks', () => {
   it('checks the resolved creator when the reported item is Content', async () => {
     const enqueueSpy = vi.fn(async () => undefined);
     const existingReportCheck = vi.fn(async () => true);
+    const getPartialItems = vi.fn(async () => [fullUserSubmission]);
 
     const result = await makeEnqueue(
       enqueueSpy,
       existingReportCheck,
+      getPartialItems,
     ).enqueueForHumanReviewIfApplicable({
       orgId: 'org-1',
       createdAt: new Date('2026-01-02T00:00:00Z'),
@@ -178,6 +181,7 @@ describe('NcmecEnqueueToMrt existing-report checks', () => {
       userItemTypeId: 'user-type',
     });
     expect(result).toEqual({ status: 'SKIPPED' });
+    expect(getPartialItems).not.toHaveBeenCalled();
     expect(enqueueSpy).not.toHaveBeenCalled();
   });
 });
