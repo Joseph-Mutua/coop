@@ -27,6 +27,11 @@ export type NcmecTargetUserResolution =
       creatorItemType: ItemType;
     };
 
+export type ValidatedNcmecTarget = {
+  reportedItemType: ItemType;
+  targetUser: Extract<NcmecTargetUserResolution, { success: true }>;
+};
+
 /**
  * Resolves the User that an NCMEC job targets without fetching the User's item
  * data. This keeps duplicate-report checks ahead of slower item lookups.

@@ -1,4 +1,3 @@
-/* eslint-disable max-lines */
 import {
   getScalarType,
   isMediaType,
@@ -38,7 +37,10 @@ import {
 } from '../manualReviewToolService/manualReviewToolService.js';
 import { type ItemType } from '../moderationConfigService/types/itemTypes.js';
 import type NcmecReporting from './ncmecReporting.js';
-import { resolveNcmecTargetUser } from './resolveNcmecTargetUser.js';
+import {
+  resolveNcmecTargetUser,
+  type ValidatedNcmecTarget,
+} from './resolveNcmecTargetUser.js';
 
 export default class NcmecEnqueueToMrt {
   constructor(
@@ -75,6 +77,7 @@ export default class NcmecEnqueueToMrt {
           enqueueSource: 'MRT_JOB';
           enqueueSourceInfo: MrtJobEnqueueSourceInfo;
           reenqueuedFrom: OriginJobInfo;
+          validatedNcmecTarget?: ValidatedNcmecTarget;
         }
       | {
           enqueueSource: 'POST_ACTIONS';
@@ -85,56 +88,17 @@ export default class NcmecEnqueueToMrt {
   ) {
     const { orgId, createdAt } = input;
 
-    // Resolve the target User before fetching their item data so an existing
-    // report can skip the slower Partial Items lookup.
-    const reportedItemType = await this.moderationConfigService.getItemType({
-      orgId: input.orgId,
-      itemTypeSelector: input.item.itemTypeIdentifier,
-    });
-
-    if (reportedItemType === undefined) {
-      throw new Error(
-        `No item type for org ${input.orgId} with ID ${input.item.itemTypeIdentifier.id}`,
-      );
-    }
+    const validatedNcmecTarget =
+      input.enqueueSource === 'MRT_JOB'
+        ? input.validatedNcmecTarget
+        : undefined;
+    const { reportedItemType, targetUser } =
+      validatedNcmecTarget ?? (await this.#resolveNcmecTarget(input));
 
     const reportedItem = itemSubmissionWithTypeIdentifierToItemSubmission(
       input.item,
       reportedItemType,
     );
-    const targetUser = await resolveNcmecTargetUser({
-      orgId,
-      itemId: reportedItem.itemId,
-      itemType: reportedItemType,
-      data: reportedItem.data,
-      moderationConfigService: this.moderationConfigService,
-    });
-
-    if (!targetUser.success) {
-      const reason = targetUser.reason;
-      switch (reason) {
-        case 'MISSING_CREATOR':
-          throw new Error(
-            'Cannot create NCMEC job: Content item does not have a creatorId field configured. ' +
-              'Please add the creatorId role to the owner/creator field in your item type schema.',
-          );
-        case 'CREATOR_ITEM_TYPE_NOT_FOUND':
-          throw new Error(
-            `Cannot create NCMEC job: User item type ${targetUser.creatorIdentifier.typeId} not found.`,
-          );
-        case 'CREATOR_ITEM_TYPE_NOT_USER':
-          throw new Error(
-            `Cannot create NCMEC job: Item type ${targetUser.creatorIdentifier.typeId} is not a USER type (it's ${targetUser.creatorItemType.kind}).`,
-          );
-        case 'UNSUPPORTED_ITEM_TYPE':
-          throw new Error(
-            `Cannot create NCMEC job: Cannot determine user from item type ${reportedItemType.kind}. ` +
-              'Please report the USER directly.',
-          );
-        default:
-          return assertUnreachable(reason);
-      }
-    }
 
     const hasExistingReport =
       await this.ncmecReporting.getUserHasExistingNcmeReport({
@@ -252,6 +216,58 @@ export default class NcmecEnqueueToMrt {
     return { status: 'ENQUEUED' };
   }
 
+  async #resolveNcmecTarget(input: {
+    orgId: string;
+    item: ItemSubmissionWithTypeIdentifier;
+  }): Promise<ValidatedNcmecTarget> {
+    const reportedItemType = await this.moderationConfigService.getItemType({
+      orgId: input.orgId,
+      itemTypeSelector: input.item.itemTypeIdentifier,
+    });
+
+    if (reportedItemType === undefined) {
+      throw new Error(
+        `No item type for org ${input.orgId} with ID ${input.item.itemTypeIdentifier.id}`,
+      );
+    }
+
+    const targetUser = await resolveNcmecTargetUser({
+      orgId: input.orgId,
+      itemId: input.item.itemId,
+      itemType: reportedItemType,
+      data: input.item.data,
+      moderationConfigService: this.moderationConfigService,
+    });
+
+    if (!targetUser.success) {
+      const reason = targetUser.reason;
+      switch (reason) {
+        case 'MISSING_CREATOR':
+          throw new Error(
+            'Cannot create NCMEC job: Content item does not have a creatorId field configured. ' +
+              'Please add the creatorId role to the owner/creator field in your item type schema.',
+          );
+        case 'CREATOR_ITEM_TYPE_NOT_FOUND':
+          throw new Error(
+            `Cannot create NCMEC job: User item type ${targetUser.creatorIdentifier.typeId} not found.`,
+          );
+        case 'CREATOR_ITEM_TYPE_NOT_USER':
+          throw new Error(
+            `Cannot create NCMEC job: Item type ${targetUser.creatorIdentifier.typeId} is not a USER type (it's ${targetUser.creatorItemType.kind}).`,
+          );
+        case 'UNSUPPORTED_ITEM_TYPE':
+          throw new Error(
+            `Cannot create NCMEC job: Cannot determine user from item type ${reportedItemType.kind}. ` +
+              'Please report the USER directly.',
+          );
+        default:
+          return assertUnreachable(reason);
+      }
+    }
+
+    return { reportedItemType, targetUser };
+  }
+
   async #getMediaFromReportedItem(
     reportedItem: ItemSubmissionWithTypeIdentifier,
     reportedItemType: ItemType,
@@ -324,10 +340,12 @@ export default class NcmecEnqueueToMrt {
       if (!hasReportedItem) {
         if (reportedItemSubmission) {
           // Convert ItemSubmissionWithTypeIdentifier to ItemSubmission for consistency
-          const itemType = await this.moderationConfigService.getItemType({
-            orgId,
-            itemTypeSelector: { id: reportedItemIdentifier.typeId },
-          });
+          const itemType =
+            reportedItemType ??
+            (await this.moderationConfigService.getItemType({
+              orgId,
+              itemTypeSelector: { id: reportedItemIdentifier.typeId },
+            }));
 
           if (itemType) {
             const reportedItemAsSubmission =

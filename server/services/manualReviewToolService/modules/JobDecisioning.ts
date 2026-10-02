@@ -18,7 +18,10 @@ import { getFieldValueForRole } from '../../itemProcessingService/index.js';
 import { parseStoredParameters } from '../../moderationConfigService/modules/actionParametersValidation.js';
 import { validateActionParameterValues } from '../../moderationConfigService/modules/actionParameterValueValidation.js';
 import { type NCMECMediaReport } from '../../ncmecService/ncmecReporting.js';
-import { resolveNcmecTargetUser } from '../../ncmecService/resolveNcmecTargetUser.js';
+import {
+  resolveNcmecTargetUser,
+  type ValidatedNcmecTarget,
+} from '../../ncmecService/resolveNcmecTargetUser.js';
 import {
   type ClearReportsDisposition,
   type ManualReviewToolServicePg,
@@ -259,6 +262,7 @@ export type OnRecordDecisionInput = {
   reviewerEmail: string;
   decisionReason?: string;
   suppressUserReportSweep?: boolean;
+  validatedNcmecTarget?: ValidatedNcmecTarget;
 };
 
 export const NCMEC_ESCALATION_SKIP_WARNING =
@@ -368,7 +372,7 @@ export default class JobDecisioning {
     orgId: string;
     job: ManualReviewJob | ManualReviewAppealJob;
     decisionComponents: readonly ManualReviewDecisionComponent[];
-  }): Promise<{ userId: string; userItemTypeId: string } | undefined> {
+  }): Promise<ValidatedNcmecTarget | undefined> {
     const { orgId, job, decisionComponents } = opts;
     const escalatesToNcmec = decisionComponents.some(
       (decision) =>
@@ -422,10 +426,7 @@ export default class JobDecisioning {
       });
     }
 
-    return {
-      userId: targetUser.userIdentifier.id,
-      userItemTypeId: targetUser.userItemType.id,
-    };
+    return { reportedItemType, targetUser };
   }
 
   async submitDecision(opts: SubmitDecisionInput) {
@@ -471,7 +472,7 @@ export default class JobDecisioning {
     // The UI prevents this submission too, but API and stale clients can bypass
     // that check. Running this before either mutation keeps the review job
     // available when the escalation cannot be created.
-    const ncmecEscalationUser = await this.assertNcmecEscalationIsSupported({
+    const validatedNcmecTarget = await this.assertNcmecEscalationIsSupported({
       orgId,
       job,
       decisionComponents: decisions,
@@ -722,6 +723,7 @@ export default class JobDecisioning {
         reviewerEmail,
         decisionReason,
         suppressUserReportSweep,
+        validatedNcmecTarget,
       }).catch((error) => {
         this.tracer.addSpan(
           { resource: 'actionPublisher', operation: 'publishAction' },
@@ -748,7 +750,7 @@ export default class JobDecisioning {
       warnings:
         newDecisionStored && automaticCloseDecision === undefined
           ? await this.#ncmecEscalationSkipWarnings({
-              ncmecEscalationUser,
+              validatedNcmecTarget,
               orgId: job.orgId,
             })
           : [],
@@ -765,15 +767,16 @@ export default class JobDecisioning {
    * through.
    */
   async #ncmecEscalationSkipWarnings(opts: {
-    ncmecEscalationUser: { userId: string; userItemTypeId: string } | undefined;
+    validatedNcmecTarget: ValidatedNcmecTarget | undefined;
     orgId: string;
   }): Promise<string[]> {
-    if (opts.ncmecEscalationUser == null) {
+    if (opts.validatedNcmecTarget == null) {
       return [];
     }
     const hasExistingReport = await this.getUserHasExistingNcmecReport({
       orgId: opts.orgId,
-      ...opts.ncmecEscalationUser,
+      userId: opts.validatedNcmecTarget.targetUser.userIdentifier.id,
+      userItemTypeId: opts.validatedNcmecTarget.targetUser.userItemType.id,
     });
 
     return hasExistingReport ? [NCMEC_ESCALATION_SKIP_WARNING] : [];

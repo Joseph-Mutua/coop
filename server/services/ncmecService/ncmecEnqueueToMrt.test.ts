@@ -82,18 +82,16 @@ function makeEnqueue(
   enqueueSpy: Mock,
   existingReportCheck: ExistingReportCheck = async () => false,
   getPartialItems: Mock = vi.fn(async () => [fullUserSubmission]),
+  getItemType: Mock = vi.fn(
+    async ({ itemTypeSelector }: { itemTypeSelector: { id: string } }) =>
+      itemTypeSelector.id === 'msg-type' ? messageType : userType,
+  ),
 ): NcmecEnqueueToMrt {
   return new NcmecEnqueueToMrt(
     {
       getPartialItems,
     } as unknown as never,
-    {
-      getItemType: async ({
-        itemTypeSelector,
-      }: {
-        itemTypeSelector: { id: string };
-      }) => (itemTypeSelector.id === 'msg-type' ? messageType : userType),
-    } as unknown as never,
+    { getItemType } as unknown as never,
     { enqueue: enqueueSpy } as unknown as never,
     {
       getItemSubmissionsByCreator: () => emptyAsyncIterable(),
@@ -183,5 +181,46 @@ describe('NcmecEnqueueToMrt existing-report checks', () => {
     expect(result).toEqual({ status: 'SKIPPED' });
     expect(getPartialItems).not.toHaveBeenCalled();
     expect(enqueueSpy).not.toHaveBeenCalled();
+  });
+
+  it('reuses the validated MRT target without repeating item-type lookups', async () => {
+    const enqueueSpy = vi.fn(async () => undefined);
+    const existingReportCheck = vi.fn(async () => false);
+    const getPartialItems = vi.fn(async () => [fullUserSubmission]);
+    const getItemType = vi.fn(async () => {
+      throw new Error('item types changed after decision validation');
+    });
+
+    const result = await makeEnqueue(
+      enqueueSpy,
+      existingReportCheck,
+      getPartialItems,
+      getItemType,
+    ).enqueueForHumanReviewIfApplicable({
+      orgId: 'org-1',
+      createdAt: new Date('2026-01-02T00:00:00Z'),
+      item: messageItem,
+      correlationId: 'corr-1' as unknown as never,
+      enqueueSource: 'MRT_JOB',
+      enqueueSourceInfo: { kind: 'MRT_JOB' },
+      reenqueuedFrom: { jobId: 'original-job' as unknown as never },
+      validatedNcmecTarget: {
+        reportedItemType: messageType,
+        targetUser: {
+          success: true,
+          userIdentifier: { id: 'user-1', typeId: 'user-type' },
+          userItemType: userType as ItemType & { kind: 'USER' },
+        },
+      },
+    });
+
+    expect(result).toEqual({ status: 'ENQUEUED' });
+    expect(getItemType).not.toHaveBeenCalled();
+    expect(existingReportCheck).toHaveBeenCalledWith({
+      orgId: 'org-1',
+      userId: 'user-1',
+      userItemTypeId: 'user-type',
+    });
+    expect(enqueueSpy).toHaveBeenCalledTimes(1);
   });
 });
