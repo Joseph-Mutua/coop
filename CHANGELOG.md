@@ -12,9 +12,18 @@ For more information about each release including git tags and artifacts, see [R
 
 - Indicator on the Appeals queue tab when appeals are pending ([#1329](https://github.com/roostorg/coop/pull/1329) by [@madheesunp](https://github.com/madheesunp))
 
+### Changed
+
+- Require HMA 1.2.0 or later ([#1360](https://github.com/roostorg/coop/pull/1360) by [@juanmrad](https://github.com/juanmrad))
+
 ### Fixed
 
+- Renaming a hash bank no longer discards its hashed content ([#1360](https://github.com/roostorg/coop/pull/1360) by [@juanmrad](https://github.com/juanmrad))
 - Zentropi Labeler signal failing on every call; labeler versions now require a labeler ID ([#1335](https://github.com/roostorg/coop/pull/1335) by [@reitblatt](https://github.com/reitblatt))
+
+### Security
+
+- Store hash-exchange credentials per bank ([#1360](https://github.com/roostorg/coop/pull/1360) by [@juanmrad](https://github.com/juanmrad))
 
 ## [1.1.1] - 2026-10-01
 
