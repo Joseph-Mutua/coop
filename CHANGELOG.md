@@ -11,6 +11,7 @@ For more information about each release including git tags and artifacts, see [R
 ### Added
 
 - Indicator on the Appeals queue tab when appeals are pending ([#1329](https://github.com/roostorg/coop/pull/1329) by [@madheesunp](https://github.com/madheesunp))
+- Per-queue job sort order for manual review queues with support for sorting by number of reports ([#718](https://github.com/roostorg/coop/pull/718) by [@calebmcquaid](https://github.com/calebmcquaid), closes [#670](https://github.com/roostorg/coop/issues/670))
 
 ### Changed
 

@@ -1,3 +1,4 @@
+import { TooltipProvider } from '@/coop-ui/Tooltip';
 import { render, screen, within } from '@testing-library/react';
 import { HelmetProvider } from 'react-helmet-async';
 import { MemoryRouter } from 'react-router-dom';
@@ -64,9 +65,11 @@ function reportsQueue(pendingJobCount: number) {
 function renderDashboard() {
   render(
     <HelmetProvider>
-      <MemoryRouter>
-        <ManualReviewQueuesDashboard />
-      </MemoryRouter>
+      <TooltipProvider>
+        <MemoryRouter>
+          <ManualReviewQueuesDashboard />
+        </MemoryRouter>
+      </TooltipProvider>
     </HelmetProvider>,
   );
 }
