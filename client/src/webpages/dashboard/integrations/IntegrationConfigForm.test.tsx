@@ -112,7 +112,7 @@ describe('Zentropi integration configuration', () => {
     },
   );
 
-  it('allows adding a version without a labeler ID but still requires its ID and name', () => {
+  it('saves a new version without a labeler ID but still requires its ID and name', () => {
     renderForm([]);
     // API-key-only setup remains valid; empty new rows do not.
     expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
@@ -128,6 +128,23 @@ describe('Zentropi integration configuration', () => {
       target: { value: 'New version' },
     });
     expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(setConfig).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        variables: {
+          input: {
+            apiCredential: {
+              zentropi: {
+                apiKey: 'test-api-key',
+                labelerVersions: [
+                  { id: 'lv_new', label: 'New version', labelerId: '' },
+                ],
+              },
+            },
+          },
+        },
+      }),
+    );
     fireEvent.change(screen.getByPlaceholderText('Version ID'), {
       target: { value: '' },
     });
