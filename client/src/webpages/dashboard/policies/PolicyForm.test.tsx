@@ -107,14 +107,12 @@ async function submitPolicy(name: string) {
 }
 
 describe('PolicyForm', () => {
-  it('shows an error instead of success when policy creation fails', async () => {
+  it('shows a generic error instead of success when policy creation fails', async () => {
     renderPolicyForm();
     await submitPolicy('Duplicate Policy');
 
     expect(
-      screen.getByText(
-        'Error saving policy: "Duplicate Policy" may already exist.',
-      ),
+      screen.getByText('Error saving policy. Please try again.'),
     ).toBeTruthy();
     expect(screen.queryByText('Policy Created')).toBeNull();
   });
