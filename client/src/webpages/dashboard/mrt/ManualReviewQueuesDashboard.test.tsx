@@ -1,5 +1,6 @@
 import { TooltipProvider } from '@/coop-ui/Tooltip';
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
+import { type ReactNode } from 'react';
 import { HelmetProvider } from 'react-helmet-async';
 import { MemoryRouter } from 'react-router';
 import { describe, expect, it, vi } from 'vitest';
@@ -64,16 +65,18 @@ function reportsQueue(pendingJobCount: number) {
   };
 }
 
-function renderDashboard() {
-  return render(
+function DashboardWrapper({ children }: { children: ReactNode }) {
+  return (
     <HelmetProvider>
       <TooltipProvider>
-        <MemoryRouter>
-          <ManualReviewQueuesDashboard />
-        </MemoryRouter>
+        <MemoryRouter>{children}</MemoryRouter>
       </TooltipProvider>
-    </HelmetProvider>,
+    </HelmetProvider>
   );
+}
+
+function renderDashboard() {
+  return render(<ManualReviewQueuesDashboard />, { wrapper: DashboardWrapper });
 }
 
 describe('ManualReviewQueuesDashboard appeals tab indicator', () => {
@@ -105,13 +108,17 @@ describe('ManualReviewQueuesDashboard review eligibility', () => {
     ).toBeDisabled();
   });
 
-  it('disables reviewing when all pending jobs are skipped by this reviewer', () => {
+  it('explains disabled reviewing when all pending jobs are skipped by this reviewer', async () => {
     reviewableQueues = [{ ...reportsQueue(3), hasUnskippedJobs: false }];
     renderDashboard();
     expect(
       screen.getByRole('button', { name: 'Start Reviewing' }),
     ).toBeDisabled();
     expect(screen.getByText('3')).toBeInTheDocument();
+    fireEvent.focus(screen.getByLabelText('Review availability'));
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(
+      'Jobs you skipped become available again after 30 minutes.',
+    );
   });
 
   it('enables reviewing when an unskipped job remains', () => {
@@ -122,22 +129,14 @@ describe('ManualReviewQueuesDashboard review eligibility', () => {
     ).toBeEnabled();
   });
 
-  it('updates eligibility when polling finds a new job or expired skip', () => {
+  it('updates eligibility when reviewable queue data changes', () => {
     reviewableQueues = [{ ...reportsQueue(3), hasUnskippedJobs: false }];
     const { rerender } = renderDashboard();
     expect(
       screen.getByRole('button', { name: 'Start Reviewing' }),
     ).toBeDisabled();
     reviewableQueues = [reportsQueue(3)];
-    rerender(
-      <HelmetProvider>
-        <TooltipProvider>
-          <MemoryRouter>
-            <ManualReviewQueuesDashboard />
-          </MemoryRouter>
-        </TooltipProvider>
-      </HelmetProvider>,
-    );
+    rerender(<ManualReviewQueuesDashboard />);
     expect(
       screen.getByRole('button', { name: 'Start Reviewing' }),
     ).toBeEnabled();

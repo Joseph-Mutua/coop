@@ -153,13 +153,14 @@ describe('MRT queue/job resolvers are membership-scoped', () => {
       const { ctx, hasUnskippedJobs } = makeCtx({
         reviewableQueueIds: ['q-1'],
       });
+      hasUnskippedJobs.mockResolvedValueOnce(true);
       await expect(
         ManualReviewQueue.hasUnskippedJobs(
           { orgId: 'org-1', id: 'q-1', isAppealsQueue: false },
           {},
           ctx,
         ),
-      ).resolves.toBe(false);
+      ).resolves.toBe(true);
       expect(hasUnskippedJobs).toHaveBeenCalledWith({
         orgId: 'org-1',
         queueId: 'q-1',

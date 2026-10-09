@@ -347,15 +347,39 @@ export default function ManualReviewQueuesDashboard() {
   const [selectedTab, setSelectedTab] =
     useState<MRTQueuesDashboardTab>('DEFAULT');
   const startReviewing = useCallback(
-    (id: string, hasUnskippedJobs: boolean) => {
+    (
+      id: string,
+      hasUnskippedJobs: boolean,
+      pendingJobCount: number,
+      isAppealsQueue: boolean,
+    ) => {
+      const disabledReason =
+        pendingJobCount === 0
+          ? 'No pending jobs in this queue.'
+          : isAppealsQueue
+            ? 'No jobs are ready for review.'
+            : 'No jobs are ready for you to review. Jobs you skipped become available again after 30 minutes.';
       return (
-        <Button
-          className="flex items-center justify-center w-full p-4 text-sm text-gray-600 bg-white border border-gray-200 border-solid shadow-none cursor-pointer rounded-md drop-shadow-none hover:border-gray-200 focus:border-gray-200 hover:bg-gray-100 hover:text-gray-600 focus:text-gray-600"
-          onClick={async () => navigate(`review/${id}`)}
-          disabled={!hasUnskippedJobs}
-        >
-          Start Reviewing
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span
+              className="block w-full"
+              tabIndex={hasUnskippedJobs ? undefined : 0}
+              aria-label={hasUnskippedJobs ? undefined : 'Review availability'}
+            >
+              <Button
+                className="flex items-center justify-center w-full p-4 text-sm text-gray-600 bg-white border border-gray-200 border-solid shadow-none cursor-pointer rounded-md drop-shadow-none hover:border-gray-200 focus:border-gray-200 hover:bg-gray-100 hover:text-gray-600 focus:text-gray-600"
+                onClick={async () => navigate(`review/${id}`)}
+                disabled={!hasUnskippedJobs}
+              >
+                Start Reviewing
+              </Button>
+            </span>
+          </TooltipTrigger>
+          {!hasUnskippedJobs && (
+            <TooltipContent>{disabledReason}</TooltipContent>
+          )}
+        </Tooltip>
       );
     },
     [navigate],
@@ -680,6 +704,7 @@ export default function ManualReviewQueuesDashboard() {
                 description,
                 pendingJobCount,
                 hasUnskippedJobs,
+                isAppealsQueue,
                 isDefaultQueue,
                 oldestJobCreatedAt,
                 jobSortType,
@@ -692,7 +717,12 @@ export default function ManualReviewQueuesDashboard() {
                   name,
                   description,
                   isFavorited: (favoriteQueues ?? []).includes(id),
-                  startReviewing: startReviewing(id, hasUnskippedJobs),
+                  startReviewing: startReviewing(
+                    id,
+                    hasUnskippedJobs,
+                    pendingJobCount,
+                    isAppealsQueue,
+                  ),
                   pendingJobCount: pendingJobCount.toLocaleString('en'),
                   oldestJobCreatedAt,
                   jobSortType:

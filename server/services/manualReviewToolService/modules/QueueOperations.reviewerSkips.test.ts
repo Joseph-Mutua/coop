@@ -12,7 +12,10 @@ import {
 } from '../../itemProcessingService/index.js';
 import { type ItemSubmissionWithTypeIdentifier } from '../../itemProcessingService/makeItemSubmissionWithTypeIdentifier.js';
 import { type ManualReviewJobPayload } from '../manualReviewToolService.js';
-import QueueOperations from './QueueOperations.js';
+import QueueOperations, {
+  bullJobIdtoExternalJobId,
+  itemIdToBullJobId,
+} from './QueueOperations.js';
 
 describe('QueueOperations per-reviewer skips', () => {
   // Runs inside a transaction that rolls back, so the fixtures need no manual
@@ -35,11 +38,45 @@ describe('QueueOperations per-reviewer skips', () => {
       userId: user.id,
     });
 
+    const queueOps = deps.ManualReviewToolService['queueOps'];
+    const bullQueue = await queueOps['getOrCreateBullQueue']({
+      orgId: org.id,
+      queueId: queue.id,
+    });
+    const itemTypeId = uid();
+    const availabilityOpts = {
+      orgId: org.id,
+      queueId: queue.id,
+      reviewerId: 'reviewer-a',
+      isAppealsQueue: false,
+    };
+
     return {
       org,
       queue,
       user,
       mrtService: deps.ManualReviewToolService,
+      queueOps,
+      bullQueue,
+      redis: deps.IORedis,
+      availabilityOpts,
+      addReportJob: async (itemId: string, priority = 1000) => {
+        const job = await queueOps.addJob({
+          orgId: org.id,
+          queueId: queue.id,
+          enqueueSourceInfo: { kind: 'REPORT' },
+          priority,
+          jobPayload: {
+            policyIds: [],
+            payload: makePayloadFor(itemTypeId)(itemId),
+          },
+        });
+        const bullJob = await bullQueue.getJob(
+          itemIdToBullJobId({ typeId: itemTypeId, id: itemId }),
+        );
+        if (!bullJob) throw new Error('Expected the enqueued report job');
+        return { job, bullJob };
+      },
     };
   });
 
@@ -64,6 +101,200 @@ describe('QueueOperations per-reviewer skips', () => {
       }),
       enqueueSourceInfo: { kind: 'REPORT' },
     });
+
+  testWithQueue(
+    'future-delayed jobs are pending but unavailable until their delay is due',
+    async ({ queueOps, bullQueue, availabilityOpts, addReportJob }) => {
+      const { bullJob } = await addReportJob('delayed');
+      const claimed = await queueOps.dequeueNextJobWithLock({
+        ...availabilityOpts,
+        lockToken: availabilityOpts.reviewerId,
+      });
+      expect(claimed).not.toBeNull();
+      await bullJob.moveToDelayed(
+        Date.now() + 60_000,
+        availabilityOpts.reviewerId,
+      );
+      expect(await bullQueue.count()).toBe(1);
+      expect(await queueOps.hasUnskippedJobs(availabilityOpts)).toBe(false);
+      expect(
+        await queueOps.hasUnskippedJobs({
+          ...availabilityOpts,
+          isAppealsQueue: true,
+        }),
+      ).toBe(false);
+      expect(
+        await queueOps.dequeueNextJobWithLock({
+          ...availabilityOpts,
+          lockToken: availabilityOpts.reviewerId,
+        }),
+      ).toBeNull();
+      await bullJob.changeDelay(0);
+      expect(await queueOps.hasUnskippedJobs(availabilityOpts)).toBe(true);
+      expect(
+        await queueOps.hasUnskippedJobs({
+          ...availabilityOpts,
+          isAppealsQueue: true,
+        }),
+      ).toBe(true);
+      expect(
+        await queueOps.dequeueNextJobWithLock({
+          ...availabilityOpts,
+          lockToken: availabilityOpts.reviewerId,
+        }),
+      ).not.toBeNull();
+    },
+  );
+
+  testWithQueue(
+    'paused and waiting-children jobs do not enable reviewing',
+    async ({ queueOps, bullQueue, redis, availabilityOpts, addReportJob }) => {
+      const { bullJob } = await addReportJob('parent', 0);
+      expect(await queueOps.hasUnskippedJobs(availabilityOpts)).toBe(true);
+      await bullQueue.pause();
+      expect(await bullQueue.count()).toBe(1);
+      expect(await queueOps.hasUnskippedJobs(availabilityOpts)).toBe(false);
+      await bullQueue.resume();
+      await queueOps.dequeueNextJobWithLock({
+        ...availabilityOpts,
+        lockToken: availabilityOpts.reviewerId,
+      });
+      await redis.sadd(
+        bullQueue.toKey(`${bullJob.id}:dependencies`),
+        'pending-child',
+      );
+      expect(
+        await bullJob.moveToWaitingChildren(availabilityOpts.reviewerId),
+      ).toBe(true);
+      expect(await bullQueue.count()).toBe(1);
+      expect(await queueOps.hasUnskippedJobs(availabilityOpts)).toBe(false);
+      expect(
+        await queueOps.dequeueNextJobWithLock({
+          ...availabilityOpts,
+          lockToken: availabilityOpts.reviewerId,
+        }),
+      ).toBeNull();
+    },
+  );
+
+  testWithQueue(
+    'reuses all-skipped scans and refreshes when ready counts or skips change',
+    async ({ queueOps, bullQueue, redis, availabilityOpts, addReportJob }) => {
+      const { job } = await addReportJob('skipped');
+      await queueOps.recordReviewerSkip({ ...availabilityOpts, jobId: job.id });
+      const scan = vi.spyOn(bullQueue, 'getJobs');
+      try {
+        expect(await queueOps.hasUnskippedJobs(availabilityOpts)).toBe(false);
+        expect(await queueOps.hasUnskippedJobs(availabilityOpts)).toBe(false);
+        expect(scan).toHaveBeenCalledTimes(1);
+        const { job: newJob } = await addReportJob('new');
+        expect(await queueOps.hasUnskippedJobs(availabilityOpts)).toBe(true);
+        await queueOps.recordReviewerSkip({
+          ...availabilityOpts,
+          jobId: newJob.id,
+        });
+        expect(await queueOps.hasUnskippedJobs(availabilityOpts)).toBe(false);
+        expect(scan).toHaveBeenCalledTimes(2);
+        await redis.zrem(
+          `{${availabilityOpts.orgId}}:mrt-reviewer-skips:${availabilityOpts.queueId}:${availabilityOpts.reviewerId}`,
+          newJob.id,
+        );
+        await queueOps.recordReviewerSkip({
+          ...availabilityOpts,
+          jobId: 'removed-job',
+        });
+        expect(await queueOps.hasUnskippedJobs(availabilityOpts)).toBe(true);
+      } finally {
+        scan.mockRestore();
+      }
+    },
+  );
+
+  testWithQueue(
+    'scans multiple backlog pages with bounded concurrency and finds a late unskipped job',
+    async ({ queueOps, bullQueue, redis, availabilityOpts, addReportJob }) => {
+      const { job } = await addReportJob('first');
+      const backlog = Array.from({ length: 400 }, (_, i) => {
+        const itemId = `backlog-${i}`;
+        const bullId = itemIdToBullJobId({
+          typeId: job.payload.item.itemTypeIdentifier.id,
+          id: itemId,
+        });
+        return {
+          name: bullId,
+          data: {
+            ...job,
+            id: bullJobIdtoExternalJobId(bullId),
+            payload: {
+              ...job.payload,
+              item: { ...job.payload.item, itemId },
+            },
+          },
+          opts: { jobId: bullId, priority: 1000, removeOnComplete: true },
+        };
+      });
+      await bullQueue.addBulk(backlog);
+      const skipKey = `{${availabilityOpts.orgId}}:mrt-reviewer-skips:${availabilityOpts.queueId}:${availabilityOpts.reviewerId}`;
+      const expiresAt = Date.now() + QueueOperations.REVIEWER_SKIP_TTL_MS;
+      await redis.zadd(
+        skipKey,
+        expiresAt,
+        job.id,
+        ...backlog.flatMap(({ data }) => [expiresAt, data.id]),
+      );
+      await redis.pexpire(skipKey, QueueOperations.REVIEWER_SKIP_TTL_MS);
+      const getJobs = bullQueue.getJobs.bind(bullQueue);
+      let activeReads = 0;
+      let peakReads = 0;
+      const scan = vi
+        .spyOn(bullQueue, 'getJobs')
+        .mockImplementation(async (...args) => {
+          activeReads++;
+          peakReads = Math.max(peakReads, activeReads);
+          try {
+            return await getJobs(...args);
+          } finally {
+            activeReads--;
+          }
+        });
+      try {
+        expect(await queueOps.hasUnskippedJobs(availabilityOpts)).toBe(false);
+        expect(await queueOps.hasUnskippedJobs(availabilityOpts)).toBe(false);
+        expect(scan).toHaveBeenCalledTimes(5);
+        expect(peakReads).toBe(4);
+        // Keep skips at least as numerous as ready jobs to exercise the scan.
+        await queueOps.recordReviewerSkip({
+          ...availabilityOpts,
+          jobId: 'removed-job',
+        });
+        await addReportJob('late');
+        expect(await queueOps.hasUnskippedJobs(availabilityOpts)).toBe(true);
+        expect(scan).toHaveBeenCalledTimes(10);
+        expect(await bullQueue.count()).toBe(402);
+      } finally {
+        scan.mockRestore();
+      }
+    },
+  );
+
+  testWithQueue(
+    'refreshes same-count replacements after the 30-second cache window',
+    async ({ queueOps, availabilityOpts, addReportJob }) => {
+      const { job, bullJob } = await addReportJob('old');
+      await queueOps.recordReviewerSkip({ ...availabilityOpts, jobId: job.id });
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        expect(await queueOps.hasUnskippedJobs(availabilityOpts)).toBe(false);
+        await bullJob.remove();
+        await addReportJob('replacement');
+        expect(await queueOps.hasUnskippedJobs(availabilityOpts)).toBe(false);
+        vi.setSystemTime(Date.now() + 31_000);
+        expect(await queueOps.hasUnskippedJobs(availabilityOpts)).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 
   testWithQueue(
     "availability excludes only this reviewer's active skips and preserves shared jobs",
