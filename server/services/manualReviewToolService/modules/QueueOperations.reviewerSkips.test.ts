@@ -1,4 +1,5 @@
 import { uid } from 'uid';
+import { vi } from 'vitest';
 
 import createMrtQueue from '../../../test/fixtureHelpers/createMrtQueue.js';
 import createOrg from '../../../test/fixtureHelpers/createOrg.js';
@@ -11,6 +12,7 @@ import {
 } from '../../itemProcessingService/index.js';
 import { type ItemSubmissionWithTypeIdentifier } from '../../itemProcessingService/makeItemSubmissionWithTypeIdentifier.js';
 import { type ManualReviewJobPayload } from '../manualReviewToolService.js';
+import QueueOperations from './QueueOperations.js';
 
 describe('QueueOperations per-reviewer skips', () => {
   // Runs inside a transaction that rolls back, so the fixtures need no manual
@@ -62,6 +64,89 @@ describe('QueueOperations per-reviewer skips', () => {
       }),
       enqueueSourceInfo: { kind: 'REPORT' },
     });
+
+  testWithQueue(
+    "availability excludes only this reviewer's active skips and preserves shared jobs",
+    async ({ org, queue, mrtService }) => {
+      const queueOps = mrtService['queueOps'];
+      const opts = {
+        orgId: org.id,
+        queueId: queue.id,
+        reviewerId: 'reviewer-a',
+        isAppealsQueue: false,
+      };
+      expect(await mrtService.hasUnskippedJobs(opts)).toBe(false);
+
+      const payloadFor = makePayloadFor(uid());
+      const xJob = await queueOps.addJob({
+        orgId: org.id,
+        queueId: queue.id,
+        enqueueSourceInfo: { kind: 'REPORT' },
+        priority: 1000,
+        jobPayload: { policyIds: [], payload: payloadFor('item-X') },
+      });
+      const yJob = await queueOps.addJob({
+        orgId: org.id,
+        queueId: queue.id,
+        enqueueSourceInfo: { kind: 'REPORT' },
+        priority: 2000,
+        jobPayload: { policyIds: [], payload: payloadFor('item-Y') },
+      });
+      expect(await mrtService.hasUnskippedJobs(opts)).toBe(true);
+      await queueOps.recordReviewerSkip({ ...opts, jobId: xJob.id });
+      expect(await mrtService.hasUnskippedJobs(opts)).toBe(true);
+      // A skip for a job no longer in the queue must not hide unskipped jobs.
+      await queueOps.recordReviewerSkip({ ...opts, jobId: 'removed-job' });
+      expect(await mrtService.hasUnskippedJobs(opts)).toBe(true);
+      await queueOps.recordReviewerSkip({ ...opts, jobId: yJob.id });
+      expect(await mrtService.hasUnskippedJobs(opts)).toBe(false);
+      expect(await mrtService.getPendingJobCount(opts)).toBe(2);
+      expect(
+        await mrtService.hasUnskippedJobs({
+          ...opts,
+          reviewerId: 'reviewer-b',
+        }),
+      ).toBe(true);
+
+      const other = await queueOps.dequeueNextJobWithLock({
+        orgId: org.id,
+        queueId: queue.id,
+        lockToken: 'reviewer-b',
+      });
+      expect(other?.job.payload.item.itemId).toBe('item-X');
+    },
+  );
+
+  testWithQueue(
+    'expired skips make pending jobs available again',
+    async ({ org, queue, mrtService }) => {
+      const queueOps = mrtService['queueOps'];
+      const opts = {
+        orgId: org.id,
+        queueId: queue.id,
+        reviewerId: 'reviewer-a',
+        isAppealsQueue: false,
+      };
+      const job = await queueOps.addJob({
+        orgId: org.id,
+        queueId: queue.id,
+        enqueueSourceInfo: { kind: 'REPORT' },
+        priority: 1000,
+        jobPayload: { policyIds: [], payload: makePayloadFor(uid())('item-X') },
+      });
+      await queueOps.recordReviewerSkip({ ...opts, jobId: job.id });
+      expect(await mrtService.hasUnskippedJobs(opts)).toBe(false);
+      const now = Date.now();
+      const clock = vi
+        .spyOn(Date, 'now')
+        .mockReturnValue(now + QueueOperations.REVIEWER_SKIP_TTL_MS + 1);
+      try {
+        expect(await mrtService.hasUnskippedJobs(opts)).toBe(true);
+      } finally {
+        clock.mockRestore();
+      }
+    },
+  );
 
   testWithQueue(
     'a skipped job is hidden from that reviewer but immediately available to others',

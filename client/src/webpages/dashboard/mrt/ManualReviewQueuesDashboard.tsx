@@ -65,6 +65,7 @@ gql`
         name
         description
         pendingJobCount
+        hasUnskippedJobs
         oldestJobCreatedAt
         isDefaultQueue
         isAppealsQueue
@@ -346,12 +347,12 @@ export default function ManualReviewQueuesDashboard() {
   const [selectedTab, setSelectedTab] =
     useState<MRTQueuesDashboardTab>('DEFAULT');
   const startReviewing = useCallback(
-    (id: string, pendingJobCount: number) => {
+    (id: string, hasUnskippedJobs: boolean) => {
       return (
         <Button
           className="flex items-center justify-center w-full p-4 text-sm text-gray-600 bg-white border border-gray-200 border-solid shadow-none cursor-pointer rounded-md drop-shadow-none hover:border-gray-200 focus:border-gray-200 hover:bg-gray-100 hover:text-gray-600 focus:text-gray-600"
           onClick={async () => navigate(`review/${id}`)}
-          disabled={pendingJobCount === 0}
+          disabled={!hasUnskippedJobs}
         >
           Start Reviewing
         </Button>
@@ -678,6 +679,7 @@ export default function ManualReviewQueuesDashboard() {
                 name,
                 description,
                 pendingJobCount,
+                hasUnskippedJobs,
                 isDefaultQueue,
                 oldestJobCreatedAt,
                 jobSortType,
@@ -690,7 +692,7 @@ export default function ManualReviewQueuesDashboard() {
                   name,
                   description,
                   isFavorited: (favoriteQueues ?? []).includes(id),
-                  startReviewing: startReviewing(id, pendingJobCount),
+                  startReviewing: startReviewing(id, hasUnskippedJobs),
                   pendingJobCount: pendingJobCount.toLocaleString('en'),
                   oldestJobCreatedAt,
                   jobSortType:

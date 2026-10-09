@@ -1924,6 +1924,37 @@ export default class QueueOperations {
     return queue.count();
   }
 
+  async hasUnskippedJobs(opts: {
+    orgId: string;
+    queueId: string;
+    reviewerId: string;
+    isAppealsQueue: boolean;
+  }): Promise<boolean> {
+    const { orgId, queueId, isAppealsQueue } = opts;
+    const queue = isAppealsQueue
+      ? await this.#getBullAppealQueue(orgId, queueId)
+      : await this.#getBullQueue(orgId, queueId);
+    const pendingCount = await queue.count();
+    if (pendingCount === 0) return false;
+    // Appeal dequeue does not filter per-reviewer skips.
+    if (isAppealsQueue) return true;
+
+    const skips = await this.getActiveReviewerSkips(opts);
+    // Avoid reading job payloads when skips cannot cover the entire backlog.
+    if (pendingCount > skips.size) return true;
+
+    const batchSize = 100;
+    for (let start = 0; ; start += batchSize) {
+      const jobs = await queue.getJobs(
+        ['waiting', 'paused', 'prioritized', 'delayed', 'waiting-children'],
+        start,
+        start + batchSize - 1,
+      );
+      if (jobs.some((job) => !skips.has(job.data.id))) return true;
+      if (jobs.length < batchSize) return false;
+    }
+  }
+
   /**
    * Batched variant that skips per-queue existence checks. The caller
    * must have already verified the queues exist (e.g. via

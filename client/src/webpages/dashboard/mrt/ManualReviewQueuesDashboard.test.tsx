@@ -11,6 +11,7 @@ let reviewableQueues: {
   name: string;
   description: string | null;
   pendingJobCount: number;
+  hasUnskippedJobs: boolean;
   oldestJobCreatedAt: string | null;
   isDefaultQueue: boolean;
   isAppealsQueue: boolean;
@@ -47,6 +48,7 @@ function appealsQueue(pendingJobCount: number) {
     name: 'Appeals Queue',
     description: null,
     pendingJobCount,
+    hasUnskippedJobs: pendingJobCount > 0,
     oldestJobCreatedAt: null,
     isDefaultQueue: false,
     isAppealsQueue: true,
@@ -63,7 +65,7 @@ function reportsQueue(pendingJobCount: number) {
 }
 
 function renderDashboard() {
-  render(
+  return render(
     <HelmetProvider>
       <TooltipProvider>
         <MemoryRouter>
@@ -91,5 +93,53 @@ describe('ManualReviewQueuesDashboard appeals tab indicator', () => {
     expect(
       screen.queryByRole('img', { name: 'Pending appeals' }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe('ManualReviewQueuesDashboard review eligibility', () => {
+  it('disables reviewing an empty queue', () => {
+    reviewableQueues = [reportsQueue(0)];
+    renderDashboard();
+    expect(
+      screen.getByRole('button', { name: 'Start Reviewing' }),
+    ).toBeDisabled();
+  });
+
+  it('disables reviewing when all pending jobs are skipped by this reviewer', () => {
+    reviewableQueues = [{ ...reportsQueue(3), hasUnskippedJobs: false }];
+    renderDashboard();
+    expect(
+      screen.getByRole('button', { name: 'Start Reviewing' }),
+    ).toBeDisabled();
+    expect(screen.getByText('3')).toBeInTheDocument();
+  });
+
+  it('enables reviewing when an unskipped job remains', () => {
+    reviewableQueues = [reportsQueue(3)];
+    renderDashboard();
+    expect(
+      screen.getByRole('button', { name: 'Start Reviewing' }),
+    ).toBeEnabled();
+  });
+
+  it('updates eligibility when polling finds a new job or expired skip', () => {
+    reviewableQueues = [{ ...reportsQueue(3), hasUnskippedJobs: false }];
+    const { rerender } = renderDashboard();
+    expect(
+      screen.getByRole('button', { name: 'Start Reviewing' }),
+    ).toBeDisabled();
+    reviewableQueues = [reportsQueue(3)];
+    rerender(
+      <HelmetProvider>
+        <TooltipProvider>
+          <MemoryRouter>
+            <ManualReviewQueuesDashboard />
+          </MemoryRouter>
+        </TooltipProvider>
+      </HelmetProvider>,
+    );
+    expect(
+      screen.getByRole('button', { name: 'Start Reviewing' }),
+    ).toBeEnabled();
   });
 });
