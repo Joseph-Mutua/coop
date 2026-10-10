@@ -24,6 +24,7 @@ For more information about each release including git tags and artifacts, see [R
 - Renaming a hash bank no longer discards its hashed content ([#1360](https://github.com/roostorg/coop/pull/1360) by [@juanmrad](https://github.com/juanmrad))
 - Zentropi Labeler signal failing on every call ([#1335](https://github.com/roostorg/coop/pull/1335) by [@reitblatt](https://github.com/reitblatt), [#1388](https://github.com/roostorg/coop/pull/1388) by [@Joseph-Mutua](https://github.com/Joseph-Mutua))
 - NCMEC review escalations silently succeeding when the item cannot resolve to a user ([#1331](https://github.com/roostorg/coop/pull/1331) by [@Joseph-Mutua](https://github.com/Joseph-Mutua))
+- Rule conditions on multi-value inputs (e.g. Any image, Relevant Policy) now check every value instead of only the first ([#1389](https://github.com/roostorg/coop/pull/1389) by [@reitblatt](https://github.com/reitblatt))
 
 ### Security
 
